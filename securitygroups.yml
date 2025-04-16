@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+    - Security groups for the frontends, backends, and ALBs.
+
+#############################    SECOND TEMPLATE THAT NEEDS TO BE LAUNCHED     ##############################################################
+
+Resources:
+  ### Security Groups ###
+  # Frontend ALB Security Group – allow HTTP from anywhere
+  AlbFrontendPublicSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for the Frontend ALB
+      VpcId: !ImportValue MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # Backend ALB Security Group – now internet facing, so allow inbound HTTP from anywhere
+  AlbBackendRestrictedSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for the Backend ALB (Internet Facing)
+      VpcId: !ImportValue MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref FrontendPublicSG  #Ref creates dependency so no need for the parameter DependsOn
+
+  # EC2 Instance Security Groups
+  FrontendPublicSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Frontend EC2 instances
+      VpcId: !ImportValue MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !Ref AlbFrontendPublicSG
+        # Allow frontend instances to initiate requests to backend ALB
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  BackendRestrictedSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Backend EC2 instances
+      VpcId: !ImportValue MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref AlbBackendRestrictedSG
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  #SG for my RDS
+  RdSSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Security Group for my private Rds
+      VpcId: !ImportValue MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref BackendRestrictedSG
+        
+
+Outputs: 
+  BackendRestrictedSG: 
+    Description: A Backend restricted securityGroup ID
+    Value: !Ref BackendRestrictedSG
+    Export: 
+      Name: BackendRestrictedSG
+
+  FrontendPublicSG: 
+    Description: A Frontend securityGroup ID
+    Value: !Ref FrontendPublicSG
+    Export: 
+      Name: FrontendPublicSG
+
+  AlbBackendRestrictedSG: 
+    Description: AlbBackendRestrictedSG securityGroup ID
+    Value: !Ref AlbBackendRestrictedSG
+    Export: 
+      Name: AlbBackendRestrictedSG
+
+  AlbFrontendPublicSG: 
+    Description: A Backend restricted securityGroup ID
+    Value: !Ref AlbFrontendPublicSG
+    Export: 
+      Name: AlbFrontendPublicSG
+   
+  VPCSecurityGroup: 
+    Description: Security group id of our BackendRestricted SG. shall be used by our DB
+    Value: !GetAtt RdSSG.GroupId #initially it was set to BackendRestrictedSG but if i do so, the backend larvel wont be able to communicate with the rds
+    Export: 
+      Name: VPCSecurityGroup

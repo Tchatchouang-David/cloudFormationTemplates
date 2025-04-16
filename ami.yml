@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  The AMI is built from an ubuntu base image, and uses a component to:
+    - Update the system,
+    - Install PHP, Git, and Composer,
+    - Clone your Git repository containing your Laravel project, and
+    - Install PHP-Laravel dependencies with Composer.
+
+#Parameters:
+  #VpcId:
+    #Type: AWS::EC2::VPC::Id
+    #Description: The VPC ID for the build infrastructure.
+    #Default: !ImportValue MyVPC
+  # SubnetId:
+  #   Type: AWS::EC2::Subnet::Id
+  #   Description: The Subnet ID where the Image Builder instance will run.
+  # SecurityGroupId:
+  #   Type: AWS::EC2::SecurityGroup::Id
+  #   Description: The security group for the Image Builder instance.
+  # InstanceProfileName:
+  #   Type: String
+  #   Description: The IAM instance profile (role) for Image Builder.
+  # LoggingBucketName:
+  #   Type: String
+  #   Description: The name of an S3 bucket for storing Image Builder logs.
+
+  #This script enables the creation of an ami automatically. it will create an ec2 instance and use it to create an ami. Must use a public
+  #subnet to enable ssm login else it will return errors.If you want a private subnet, you will need to implement NAT and it will be ok
+  #all what i have commented as parameters, is what we need inother to properly automate the ami creation
+
+#############################    FOURTH TEMPLATE THAT NEEDS TO BE LAUNCHED     ##############################################################
+
+Resources:
+  LaravelImageBuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LaravelImageBuilderRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess  # Optional (for public S3/Git access)
+      Policies:
+        - PolicyName: LaravelImageBuilderGitAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:List*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - imagebuilder:GetComponent
+                Resource: "*"
+
+  LaravelImageBuilderInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: LaravelImageBuilderInstanceProfile
+      Roles:
+        - !Ref LaravelImageBuilderRole
+
+  ### 1. Image Builder Component ###
+  LaravelInstallComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Name: "LaravelInstallComponent"
+      Version: "1.0.0"
+      Platform: Linux
+      Data: !Sub
+        - |
+          schemaVersion: 1.0
+          phases:
+            - name: build
+              steps:
+                - name: InstallDependencies
+                  action: ExecuteBash
+                  inputs:
+                    commands:
+                      - sudo apt-get update -y
+                      - sudo apt-get install -y git curl unzip php php-mbstring php-xml php-mysql
+                      - sudo curl -sS https://getcomposer.org/installer -o /tmp/composer-setup.php
+                      - sudo php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer
+                      - sudo rm /tmp/composer-setup.php
+                - name: CloneRepoAndSetup
+                  action: ExecuteBash
+                  inputs:
+                    commands:
+                      - sudo mkdir -p /home/ubuntu
+                      - cd /home/ubuntu
+                      - sudo git clone https://github.com/AFRIK-TECH/3-tier-laravel-nextjs-mysql.git
+                      - cd 3-tier-laravel-nextjs-mysql/devops-register-appLayer
+                      - sudo composer install --no-interaction
+                      - sudo cp .env.example .env
+                      - sudo php artisan key:generate
+                      - sudo sed -i "s/^DB_HOST=.*/DB_HOST=${RDSEndpoint}/" .env
+                      - sudo sed -i "s/^DB_DATABASE=.*/DB_DATABASE=devops/" .env
+                      - sudo sed -i "s/^DB_USERNAME=.*/DB_USERNAME=devops/" .env
+                      - sudo sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=devopsPassword/" .env
+                - name: SetPermissions
+                  action: ExecuteBash
+                  inputs:
+                    commands:
+                      - sudo chown -R ubuntu:ubuntu /home/ubuntu/3-tier-laravel-nextjs-mysql
+        - { RDSEndpoint: !ImportValue RDSEndpoint }
+      ChangeDescription: "Laravel dependency installation component"
+
+  ### 2. Image Recipe ###
+  LaravelImageRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Name: "LaravelImageRecipe"
+      Version: "1.0.0"
+      Components:
+        - ComponentArn: !Ref LaravelInstallComponent
+      ParentImage: "ami-0c1ac8a41498c1a9c" #ubuntu 24 lts
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+
+  ### 3. Infrastructure Configuration to test and build our ami. It needs internet to run all our commands we specified in the component so it must be cautiously configured ###
+  LaravelInfraConfig:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    Properties:
+      Name: "LaravelInfraConfig"
+      InstanceProfileName: !Ref LaravelImageBuilderInstanceProfile
+      SecurityGroupIds:
+        - !ImportValue AlbFrontendPublicSG
+      SubnetId: !ImportValue PublicSubnet1
+      InstanceTypes:
+      - t3.micro  # Specify the instance type(s) you want to use else it will use a random one and the bill can be salty
+      # Logging:
+      #   S3Logs:
+      #     S3BucketName: !Ref LoggingBucketName
+
+  ### 4. Image Pipeline ###
+  LaravelImagePipeline:
+    Type: AWS::ImageBuilder::ImagePipeline
+    Properties:
+      Name: "LaravelImagePipeline"
+      ImageRecipeArn: !Ref LaravelImageRecipe
+      InfrastructureConfigurationArn: !Ref LaravelInfraConfig
+      Status: "ENABLED"
+      #i tried without a schedule, everything was ok but the ami wasnt created, it is necessary inother to create the ami
+      Schedule:
+        ScheduleExpression: "cron(0 0 * * ? *)"
+        PipelineExecutionStartCondition: "EXPRESSION_MATCH_ONLY"
+
+Outputs:
+  LaravelImageRecipeARN:
+    Description: "ARN of the Laravel Image Recipe."
+    Value: !Ref LaravelImageRecipe
+  LaravelImagePipelineARN:
+    Description: "ARN of the Laravel Image Pipeline."
+    Value: !Ref LaravelImagePipeline

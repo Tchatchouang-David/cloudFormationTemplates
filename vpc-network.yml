@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+   - A VPC with DNS support/hostnames.
+   - Two public subnets (each in a different AZ) with an Internet Gateway and proper routing.
+   - Two private subnets used for backend instances and the RDS database.
+
+#############################    FIRST TEMPLATE THAT NEEDS TO BE LAUNCHED     ##############################################################
+
+Parameters:
+  AvailabilityZone1:
+    Description: The first Availability Zone for deployment.
+    Type: String
+    Default: eu-north-1a
+
+  AvailabilityZone2:
+    Description: The second Availability Zone for deployment.
+    Type: String
+    Default: eu-north-1b
+
+  Cidr1:
+    Description: CIDR block for public subnet 1
+    Type: String
+    Default: 10.0.1.0/24
+
+  Cidr2:
+    Description: CIDR block for public subnet 2
+    Type: String
+    Default: 10.0.2.0/24
+
+  Cidr3:
+    Description: CIDR block for private subnet 1 (backend/RDS)
+    Type: String
+    Default: 10.0.3.0/24
+
+  Cidr4:
+    Description: CIDR block for private subnet 2 (backend/RDS)
+    Type: String
+    Default: 10.0.4.0/24
+
+
+
+Resources:
+  ### VPC and Internet Gateway ###
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: MyVPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: MyInternetGateway
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  ### Subnets ###
+  # Public Subnets (for Frontend instances, ALBs, and now also for the backend ALB)
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref Cidr1
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Ref AvailabilityZone1
+      Tags:
+        - Key: Name
+          Value: PublicSubnet1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref Cidr2
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Ref AvailabilityZone2
+      Tags:
+        - Key: Name
+          Value: PublicSubnet2
+
+  # Private Subnets (for Backend instances and RDS)
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref Cidr3
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Ref AvailabilityZone1
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref Cidr4
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Ref AvailabilityZone2
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet2
+
+  ### Route Table for Public Subnets ###
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+Outputs: 
+  VpcIdExport: 
+    Description: the id of my vpc to be export
+    Value: !Ref MyVPC
+    Export: 
+      Name: MyVPC
+  
+  PrivateSubnet1ID: 
+    Description: export PrivateSubnet1
+    Value: !Ref PrivateSubnet1
+    Export: 
+      Name: PrivateSubnet1
+  
+  PublicSubnet1ID: 
+    Description: export PublicSubnet1
+    Value: !Ref PublicSubnet1
+    Export: 
+      Name: PublicSubnet1
+
+  PrivateSubnet2ID: 
+    Description: export PrivateSubnet2
+    Value: !Ref PrivateSubnet2
+    Export: 
+      Name: PrivateSubnet2
+  
+  PublicSubnet2ID: 
+    Description: export PublicSubnet2
+    Value: !Ref PublicSubnet2
+    Export: 
+      Name: PublicSubnet2

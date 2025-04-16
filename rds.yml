@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+    - We shall create the rds we will use here inother to get its dns and use for the ami
+
+
+#############################    THIRD TEMPLATE THAT NEEDS TO BE LAUNCHED   ##############################################################
+
+Resources:
+   ### RDS Database ###
+  RDSDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnets available for RDS instance"
+      SubnetIds:
+        - !ImportValue PrivateSubnet1
+        - !ImportValue PrivateSubnet2
+      DBSubnetGroupName: rds-subnet-group
+
+  MyRDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: devops
+      Engine: mysql
+      EngineVersion: "8.0"
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp2
+      MasterUsername: devops
+      MasterUserPassword: devopsPassword
+      VPCSecurityGroups:
+        - !ImportValue VPCSecurityGroup
+      DBSubnetGroupName: !Ref RDSDBSubnetGroup
+      MultiAZ: false #costly when set to true
+      PubliclyAccessible: false
+    DeletionPolicy: Delete
+
+Outputs:
+  RDSEndpoint:
+    Description: "Endpoint address for the RDS instance"
+    Value: !GetAtt MyRDS.Endpoint.Address
+    Export:
+      Name: RDSEndpoint

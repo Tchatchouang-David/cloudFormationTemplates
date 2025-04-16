@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFormation template to create a 3-Tier Architecture on AWS.
+  The template provisions:
+    - Two target groups:
+        • Frontend TG (port 3000).
+        • Backend TG (port 8000).
+    - Two Application Load Balancers:
+        • A public ALB for the frontend.
+        • An internet-facing ALB for the backend.
+    - EC2 instances for the frontend and backend.
+    - An RDS instance (with DB name, identifier, username, and password set to "devops").
+
+Parameters:
+  Ec2InstanceTypes:
+    Description: My default preferred EC2 instance type
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+    ConstraintDescription: Must be either t3.micro, t3.small, or t3.medium
+
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: AWS::EC2::KeyPair::KeyName
+  
+  FrontendAMI: 
+    Type: AWS::EC2::Image::Id
+    Default: ami-0c1ac8a41498c1a9c #an ubuntu x86 ami in eu-north
+
+  BackendAMI: 
+    Type: AWS::EC2::Image::Id
+    Description: using the script ami, you will create an ami then use the ami ID as BackendAMI
+
+
+
+Resources:
+  ### Load Balancers and Target Groups ###
+  # Frontend Target Group (port 3000)
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: FrontendTG
+      Port: 3000
+      Protocol: HTTP
+      VpcId: !ImportValue MyVPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: "3000"
+      HealthCheckPath: /
+
+  # Backend Target Group (port 8000)
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: BackendTG
+      Port: 8000
+      Protocol: HTTP
+      VpcId: !ImportValue MyVPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: "8000"
+      HealthCheckPath: /api/health
+
+  # Frontend Application Load Balancer (public)
+  FrontendALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: FrontendALB
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !ImportValue PublicSubnet1
+        - !ImportValue PublicSubnet2
+      SecurityGroups:
+        - !ImportValue AlbFrontendPublicSG
+
+  FrontendALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref FrontendALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  # Backend Application Load Balancer (now internet-facing)
+  BackendALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: BackendALB
+      Type: application
+      Scheme: internet-facing   #either backend or frontend, an internet facing alb must be in public subnets        
+      Subnets:
+        - !ImportValue PublicSubnet1
+        - !ImportValue PublicSubnet2           
+      SecurityGroups:
+        - !ImportValue AlbBackendRestrictedSG
+
+  BackendALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BackendALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  ### Launch Templates for Auto Scaling Groups ###
+  # Frontend Launch Template uses the FrontendAMI and a UserData script to start the frontend application.
+  FrontendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: FrontendLT
+      LaunchTemplateData:
+        ImageId: !Ref FrontendAMI
+        InstanceType: !Ref Ec2InstanceTypes
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !ImportValue FrontendPublicSG
+        UserData:
+          Fn::Base64:
+            !Sub
+              - |
+                #!/bin/bash
+                exec > /var/log/user-data.log 2>&1
+                set -ex
+                apt-get update -y
+                apt-get install -y git curl npm
+                # Uncomment the following two lines if you need Node.js 14.x installed
+                # curl -fsSL https://deb.nodesource.com/setup_14.x | bash -
+                # apt-get install -y nodejs
+                cd /home/ubuntu
+                git clone https://github.com/AFRIK-TECH/3-tier-laravel-nextjs-mysql.git
+                cd 3-tier-laravel-nextjs-mysql/devops-registration-weblayer
+                npm install
+                echo "NEXT_PUBLIC_API_ENDPOINT=http://${BackendALBDNS}" > .env
+                npm run build 
+                npm start &
+              - BackendALBDNS: !GetAtt BackendALB.DNSName
+
+  # Backend Launch Template uses the BackendAMI and a UserData script to start the backend service.
+  BackendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: BackendLT
+      LaunchTemplateData:
+        ImageId: !Ref BackendAMI
+        InstanceType: !Ref Ec2InstanceTypes
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !ImportValue BackendRestrictedSG
+        UserData: !Base64 |
+          #!/bin/bash
+          exec > /var/log/user-data.log 2>&1
+          set -ex
+          # Assume the AMI already has all dependencies and code.
+          # Optionally override configuration (e.g., .env file values) here.
+          # Start the backend service (example: Laravel app on port 8000)
+          cd /home/ubuntu/3-tier-laravel-nextjs-mysql/devops-register-appLayer
+          # If migration fails, the script will echo an error message and continue
+          php artisan migrate --force || echo "Migration failed, but proceeding..."
+          php artisan serve --host=0.0.0.0 --port=8000 &
+
+   ############################################################# Auto Scaling Groups #############################################
+  FrontendASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: FrontendASG
+      LaunchTemplate:
+        LaunchTemplateId: !Ref FrontendLaunchTemplate
+        Version: !GetAtt FrontendLaunchTemplate.LatestVersionNumber
+      MinSize: '2'
+      MaxSize: '4'
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - !ImportValue PublicSubnet1
+        - !ImportValue PublicSubnet2
+      TargetGroupARNs:
+        - !Ref FrontendTargetGroup
+      Tags:
+        - Key: Name
+          Value: FrontendInstance
+          PropagateAtLaunch: true
+
+  BackendASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: BackendASG
+      LaunchTemplate:
+        LaunchTemplateId: !Ref BackendLaunchTemplate
+        Version: !GetAtt BackendLaunchTemplate.LatestVersionNumber
+      MinSize: '2'
+      MaxSize: '4'
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - !ImportValue PrivateSubnet1
+        - !ImportValue PrivateSubnet2
+      TargetGroupARNs:
+        - !Ref BackendTargetGroup
+      Tags:
+        - Key: Name
+          Value: BackendInstance
+          PropagateAtLaunch: true
+
+ 
+
+Outputs:
+  FrontendALBDNS:
+    Description: "DNS name of the Frontend ALB"
+    Value: !GetAtt FrontendALB.DNSName
+  BackendALBDNS:
+    Description: "DNS name of the Backend ALB"
+    Value: !GetAtt BackendALB.DNSName
+  
+
+
+
+# In your scenario, if your ReactJS app (running on port 3000) must make Axios requests directly to your Laravel
+# backend (running on port 8000), then the backend ALB needs to be internet facing
+# Direct Client Access:
+# When a client (the browser that has loaded your ReactJS application) initiates an Axios request to an endpoint
+#  like https://backend-dns/api/test, that endpoint must be accessible from the public Internet. An internet-facing ALB deployed 
+#  in public subnets will receive such requests and then route them to your Laravel backend.
