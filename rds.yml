@@ -1,12 +1,24 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-    - We shall create the rds we will use here inother to get its dns and use for the ami
-
+  - We shall create the rds we will use here inother to get its dns and use for the ami
 
 #############################    THIRD TEMPLATE THAT NEEDS TO BE LAUNCHED   ##############################################################
 
 Resources:
-   ### RDS Database ###
+  ### 1. The Secret (The Vault) ###
+  MyDatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-RDS-Credentials" #Avoid name clashing
+      Description: "Main RDS credentials"
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+  ## The result shall be something of this form:------{"username": "admin","password": "xK9!pL2mN5aB8..." }
+
+  ### RDS Database ###
   RDSDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -24,13 +36,29 @@ Resources:
       EngineVersion: "8.0"
       DBInstanceClass: db.t3.micro
       AllocatedStorage: 20
-      StorageType: gp2
-      MasterUsername: devops
-      MasterUserPassword: devopsPassword
+      # Reference the Secret for Username and Password
+      MasterUsername:
+        !Join [
+          "",
+          [
+            "{{resolve:secretsmanager:",
+            !Ref MyDatabaseSecret,
+            ":SecretString:username}}",
+          ],
+        ]
+      MasterUserPassword:
+        !Join [
+          "",
+          [
+            "{{resolve:secretsmanager:",
+            !Ref MyDatabaseSecret,
+            ":SecretString:password}}",
+          ],
+        ]
       VPCSecurityGroups:
         - !ImportValue VPCSecurityGroup
       DBSubnetGroupName: !Ref RDSDBSubnetGroup
-      MultiAZ: false #costly when set to true
+      MultiAZ: false
       PubliclyAccessible: false
     DeletionPolicy: Delete
 
