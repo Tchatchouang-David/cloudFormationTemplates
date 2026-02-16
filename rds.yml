@@ -36,7 +36,7 @@ Resources:
       EngineVersion: "8.0"
       DBInstanceClass: db.t3.micro
       AllocatedStorage: 20
-      # Reference the Secret for Username and Password
+      # Reference the Secret for Username and Password automatically, it can be done manually using secret string parameters
       MasterUsername:
         !Join [
           "",
